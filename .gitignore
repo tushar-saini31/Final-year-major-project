@@ -1,0 +1,44 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python artifacts
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+**/.ipynb_checkpoints/
+**/.Python
+**/.venv/
+**/venv/
+
+# Frontend artifacts
+**/node_modules/
+**/dist/
+**/build/
+**/.cache/
+
+# Project-specific generated/runtime data
+face_auth_system/voice_model/
+face_auth_system/embeddings/
+face_auth_system/voice_embeddings/
+face_auth_system/*.wav
+
+# Optional: keep this separate repo out of parent monorepo commits
+Silent-Face-Anti-Spoofing/
