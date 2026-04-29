@@ -4,11 +4,13 @@ import os
 from datetime import datetime, timedelta
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, field_validator
 
 from app.database.db import get_db
 from app.database.models import User
+from app.modules.intrusion.service import ids_check, record_attempt
+from app.core.jwt import create_access_token
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -66,35 +68,48 @@ def _mask_phone(phone: str) -> str:
 
 def _send_otp_sms(phone: str, otp: str) -> None:
     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_phone = os.getenv("TWILIO_FROM_PHONE")
+    auth_token  = os.getenv("TWILIO_AUTH_TOKEN")
+    from_phone  = os.getenv("TWILIO_FROM_PHONE")
 
     if not account_sid or not auth_token or not from_phone:
         raise HTTPException(
             status_code=500,
-            detail="Twilio is not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_PHONE.",
+            detail="Twilio is not configured.",
         )
-
     try:
         from twilio.rest import Client
     except ImportError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Twilio SDK is not installed. Run: pip install twilio",
-        ) from exc
+        raise HTTPException(status_code=500, detail="Twilio SDK not installed.") from exc
 
     client = Client(account_sid, auth_token)
-    body = f"Your OTP is {otp}. Please do not share it with anyone."
-
     try:
         client.messages.create(
-            body=body,
+            body=f"Your OTP is {otp}. Do not share it.",
             from_=from_phone,
             to=phone,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to send OTP SMS: {exc}") from exc
 
+
+def _get_client_ip(request: Request) -> str:
+    header_order = [
+        "x-forwarded-for",
+        "x-real-ip",
+        "cf-connecting-ip",
+        "true-client-ip",
+        "fly-client-ip",
+        "x-client-ip",
+    ]
+    for key in header_order:
+        value = request.headers.get(key)
+        if value:
+            # x-forwarded-for may contain multiple addresses
+            return value.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+
+# ── Pydantic models ───────────────────────────────────────────────────────────
 
 class RegisterStartRequest(BaseModel):
     username: str
@@ -103,6 +118,8 @@ class RegisterStartRequest(BaseModel):
     phone: str
     designation: str | None = None
     password: str
+    device_id: str | None = None       # NEW
+    device_name: str | None = None     # NEW
 
     @field_validator("username")
     @classmethod
@@ -143,6 +160,8 @@ class LoginStartRequest(BaseModel):
     username: str
     email: EmailStr
     password: str
+    device_id: str | None = None       # NEW
+    device_name: str | None = None     # NEW
 
     @field_validator("username")
     @classmethod
@@ -164,6 +183,8 @@ class OtpVerifyRequest(BaseModel):
     username: str | None = None
     phone: str | None = None
     otp_code: str
+    device_id: str | None = None       # NEW
+    device_name: str | None = None     # NEW
 
     @field_validator("otp_code")
     @classmethod
@@ -174,18 +195,29 @@ class OtpVerifyRequest(BaseModel):
         return code
 
 
+class AdminLoginRequest(BaseModel):
+    password: str
+
+    @field_validator("password")
+    @classmethod
+    def password_required(cls, v):
+        if not v or not v.strip():
+            raise ValueError("password is required")
+        return v
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @router.post("/register/start")
-def register_start(payload: RegisterStartRequest, db=Depends(get_db)):
+def register_start(payload: RegisterStartRequest, request: Request, db=Depends(get_db)):
     username = payload.username.strip()
 
     if db.query(User).filter(User.username == username).first():
         raise HTTPException(status_code=409, detail="username already exists")
-
     if db.query(User).filter(User.email == str(payload.email).lower()).first():
         raise HTTPException(status_code=409, detail="email already exists")
 
     normalized_phone = _normalize_phone(payload.phone)
-
     otp = _new_otp()
     expires_at = datetime.utcnow() + timedelta(minutes=OTP_TTL_MINUTES)
 
@@ -220,26 +252,73 @@ def register_start(payload: RegisterStartRequest, db=Depends(get_db)):
 
 
 @router.post("/login/start")
-def login_start(payload: LoginStartRequest, db=Depends(get_db)):
+def login_start(payload: LoginStartRequest, request: Request, db=Depends(get_db)):
     username = payload.username.strip()
-    email = str(payload.email).strip().lower()
+    email    = str(payload.email).strip().lower()
+    ip       = _get_client_ip(request)
+    ua       = request.headers.get("user-agent", "")
+    device_id   = payload.device_id or "unknown"
+    device_name = payload.device_name or "Unknown Device"
 
+    # ── IDS check BEFORE credential verification ──────────────────────────
+    ids_result = ids_check(db, username, device_id, ua, ip)
+
+    if not ids_result["allowed"]:
+        # Record the blocked attempt
+        record_attempt(
+            db, username, device_id, device_name, ua, ip,
+            success=False,
+            risk_score=ids_result["risk_score"],
+            risk_level=ids_result["risk_level"],
+            step_failed="ids_gate",
+            alert_type=ids_result["alert_type"],
+        )
+        return {
+            "success": False,
+            "ids_blocked": True,
+            "block_type": ids_result["block_type"],
+            "block_until": ids_result["block_until"].isoformat() + "Z" if ids_result["block_until"] else None,
+            "time_remaining": ids_result["time_remaining"],
+            "attempts_remaining": ids_result["attempts_remaining"],
+            "alert_type": ids_result["alert_type"],
+            "message": ids_result["message"],
+        }
+
+    # ── Normal credential check ────────────────────────────────────────────
     user = db.query(User).filter(User.username == username).first()
     if not user:
+        record_attempt(db, username, device_id, device_name, ua, ip,
+                       False, ids_result["risk_score"], ids_result["risk_level"],
+                       step_failed="username_not_found")
         raise HTTPException(status_code=404, detail="username not found")
 
     if user.email != email:
+        record_attempt(db, username, device_id, device_name, ua, ip,
+                       False, ids_result["risk_score"], ids_result["risk_level"],
+                       step_failed="email_mismatch")
         raise HTTPException(status_code=401, detail="email does not match")
 
     if not _check_password(payload.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="invalid password")
+        record_attempt(db, username, device_id, device_name, ua, ip,
+                       False, ids_result["risk_score"], ids_result["risk_level"],
+                       step_failed="wrong_password")
 
+        # Return warning if attempts are getting close to limit
+        remaining = max(0, 5 - (user.failed_attempts or 0) - 1)
+        return {
+            "success": False,
+            "ids_blocked": False,
+            "attempts_remaining": remaining,
+            "show_warning": remaining <= 2,
+            "message": "invalid password",
+        }
+
+    # ── Credentials OK ────────────────────────────────────────────────────
     if not user.phone:
         raise HTTPException(status_code=400, detail="phone number not found for this user")
 
     otp = _new_otp()
     expires_at = datetime.utcnow() + timedelta(minutes=OTP_TTL_MINUTES)
-
     user.otp_code = otp
     user.otp_expires_at = expires_at
     user.is_otp_verified = False
@@ -257,14 +336,23 @@ def login_start(payload: LoginStartRequest, db=Depends(get_db)):
         "success": True,
         "message": f"Credentials verified. OTP sent to {_mask_phone(user.phone)}.",
         "expires_at": expires_at.isoformat() + "Z",
+        # IDS info for frontend
+        "risk_level": ids_result["risk_level"],
+        "show_warning": ids_result["show_warning"],
+        "alert_type": ids_result["alert_type"],
+        "attempts_remaining": ids_result["attempts_remaining"],
     }
 
 
 @router.post("/otp/verify")
-def otp_verify(payload: OtpVerifyRequest, db=Depends(get_db)):
+def otp_verify(payload: OtpVerifyRequest, request: Request, db=Depends(get_db)):
     username = payload.username.strip() if payload.username else ""
-    phone = _normalize_phone(payload.phone) if payload.phone else ""
-    code = payload.otp_code.strip()
+    phone    = _normalize_phone(payload.phone) if payload.phone else ""
+    code     = payload.otp_code.strip()
+    ip       = _get_client_ip(request)
+    ua       = request.headers.get("user-agent", "")
+    device_id   = payload.device_id or "unknown"
+    device_name = payload.device_name or "Unknown Device"
 
     if not code:
         raise HTTPException(status_code=400, detail="otp_code is required")
@@ -275,7 +363,7 @@ def otp_verify(payload: OtpVerifyRequest, db=Depends(get_db)):
     if phone:
         user = db.query(User).filter(User.phone == phone).first()
         if not user:
-            raise HTTPException(status_code=404, detail="phone number not found. please sign up again.")
+            raise HTTPException(status_code=404, detail="phone number not found.")
 
     if not user and username:
         user = db.query(User).filter(User.username == username).first()
@@ -290,6 +378,8 @@ def otp_verify(payload: OtpVerifyRequest, db=Depends(get_db)):
         raise HTTPException(status_code=400, detail="OTP expired")
 
     if code != user.otp_code:
+        record_attempt(db, user.username, device_id, device_name, ua, ip,
+                       False, 0, "low", step_failed="otp")
         raise HTTPException(status_code=400, detail="invalid OTP")
 
     user.is_otp_verified = True
@@ -298,4 +388,39 @@ def otp_verify(payload: OtpVerifyRequest, db=Depends(get_db)):
     user.otp_expires_at = None
     db.commit()
 
-    return {"success": True, "message": "OTP verified"}
+    # Record successful OTP step
+    record_attempt(db, user.username, device_id, device_name, ua, ip,
+                   True, 0, "low", step_failed=None)
+
+    return {
+        "success": True,
+        "message": "OTP verified",
+        "username": user.username,
+    }
+
+
+@router.post("/admin/login")
+def admin_login(payload: AdminLoginRequest, db=Depends(get_db)):
+    admin_user = (
+        db.query(User)
+        .filter(User.role == "admin")
+        .order_by(User.created_at.asc())
+        .first()
+    )
+    if not admin_user:
+        raise HTTPException(status_code=404, detail="No admin account configured")
+
+    if admin_user.is_locked:
+        raise HTTPException(status_code=403, detail="Admin account is locked")
+
+    if not _check_password(payload.password, admin_user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+
+    token = create_access_token(admin_user.username, "admin")
+    return {
+        "success": True,
+        "username": admin_user.username,
+        "role": "admin",
+        "access_token": token,
+        "token_type": "bearer",
+    }

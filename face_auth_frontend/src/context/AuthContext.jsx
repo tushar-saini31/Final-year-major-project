@@ -7,6 +7,7 @@ const DEFAULT_AUTH = {
   user: null,
   token: null,
   profile: null,
+  role: null,
   authComplete: false,
 };
 
@@ -20,6 +21,7 @@ function loadAuthFromStorage() {
       user: parsed.user ?? null,
       token: parsed.token ?? null,
       profile: parsed.profile ?? null,
+      role: parsed.role ?? null,
       authComplete: Boolean(parsed.authComplete),
     };
   } catch {
@@ -36,20 +38,22 @@ export function AuthProvider({ children }) {
     window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(auth));
   }, [auth]);
 
-  const login = (username, accessToken, profileData = null) => {
+  const login = (username, accessToken, profileData = null, role = "user") => {
     setAuth({
       user: username,
       token: accessToken,
       profile: profileData,
+      role,
       authComplete: false,
     });
   };
 
-  const loginAndComplete = (username, accessToken, profileData = null) => {
+  const loginAndComplete = (username, accessToken, profileData = null, role = "user") => {
     setAuth({
       user: username,
       token: accessToken,
       profile: profileData,
+      role,
       authComplete: true,
     });
   };
@@ -71,6 +75,8 @@ export function AuthProvider({ children }) {
         user: auth.user,
         token: auth.token,
         profile: auth.profile,
+        role: auth.role,
+        isAdmin: auth.role === "admin",
         authComplete: auth.authComplete,
         login,
         loginAndComplete,

@@ -23,9 +23,9 @@ class User(Base):
     is_face_enrolled  = Column(Boolean, default=False)
     is_voice_enrolled = Column(Boolean, default=False)
 
-    # Biometric data paths
-    face_embedding    = Column(Text, nullable=True)   # stored as JSON string
-    voice_embedding   = Column(Text, nullable=True)   # stored as JSON string
+    # Biometric data
+    face_embedding    = Column(Text, nullable=True)
+    voice_embedding   = Column(Text, nullable=True)
 
     # OTP
     otp_code          = Column(String(6), nullable=True)
@@ -34,6 +34,11 @@ class User(Base):
     created_at        = Column(DateTime, default=datetime.utcnow)
     last_login        = Column(DateTime, nullable=True)
 
+    # ── IDS fields (NEW) ─────────────────────────────────────────────────────
+    is_locked         = Column(Boolean, default=False)          # admin must unlock
+    blocked_until     = Column(DateTime, nullable=True)         # auto-expires
+    failed_attempts   = Column(Integer, default=0)              # resets on success
+
 
 class BiometricProfile(Base):
     __tablename__ = "biometric_profiles"
@@ -41,21 +46,20 @@ class BiometricProfile(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username = Column(String(100), unique=True, index=True, nullable=False)
 
-    # Store embeddings as JSON strings (lists of floats).
-    face_embedding = Column(Text, nullable=True)
-    voice_embedding = Column(Text, nullable=True)
+    face_embedding   = Column(Text, nullable=True)
+    voice_embedding  = Column(Text, nullable=True)
 
-    face_updated_at = Column(DateTime, nullable=True)
+    face_updated_at  = Column(DateTime, nullable=True)
     voice_updated_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at       = Column(DateTime, default=datetime.utcnow)
 
 
 class VaultNote(Base):
     __tablename__ = "vault_notes"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    username = Column(String(100), nullable=False, index=True)
-    title = Column(String(255), nullable=False)
-    content = Column(Text, nullable=False)
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username   = Column(String(100), nullable=False, index=True)
+    title      = Column(String(255), nullable=False)
+    content    = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

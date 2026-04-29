@@ -32,7 +32,16 @@ class VerifyUserPasswordRequest(BaseModel):
 
 
 class VerifyNotePasswordRequest(BaseModel):
+    actor_username: str
     password: str
+
+    @field_validator("actor_username")
+    @classmethod
+    def actor_valid(cls, v: str):
+        v = v.strip()
+        if not v:
+            raise ValueError("actor_username is required")
+        return v
 
     @field_validator("password")
     @classmethod
@@ -154,8 +163,11 @@ def verify_note_password(note_id: UUID, payload: VerifyNotePasswordRequest, db=D
     if not note:
         raise HTTPException(status_code=404, detail="note not found")
 
-    owner = _get_user(db, note.username)
-    if not _check_password(payload.password, owner.hashed_password):
+    actor_username = payload.actor_username.strip()
+    actor = _get_user(db, actor_username)
+    if note.username != actor_username:
+        raise HTTPException(status_code=403, detail="not authorized for this note")
+    if not _check_password(payload.password, actor.hashed_password):
         raise HTTPException(status_code=403, detail="password mismatch")
 
     return {"success": True}
@@ -204,14 +216,16 @@ def get_note(note_id: UUID, viewer_username: str = Query(..., min_length=1), db=
 
 @router.put("/notes/{note_id}")
 def update_note(note_id: UUID, payload: NoteUpdateRequest, db=Depends(get_db)):
-    _get_user(db, payload.actor_username.strip())
+    actor_username = payload.actor_username.strip()
+    actor = _get_user(db, actor_username)
 
     note = db.query(VaultNote).filter(VaultNote.id == note_id).first()
     if not note:
         raise HTTPException(status_code=404, detail="note not found")
 
-    owner = _get_user(db, note.username)
-    if not _check_password(payload.password, owner.hashed_password):
+    if note.username != actor_username:
+        raise HTTPException(status_code=403, detail="not authorized for this note")
+    if not _check_password(payload.password, actor.hashed_password):
         raise HTTPException(status_code=403, detail="password mismatch")
 
     note.title = payload.title.strip()
@@ -229,14 +243,16 @@ def delete_note(
     password: str = Query(..., min_length=1),
     db=Depends(get_db),
 ):
-    _get_user(db, actor_username.strip())
+    actor_name = actor_username.strip()
+    actor = _get_user(db, actor_name)
 
     note = db.query(VaultNote).filter(VaultNote.id == note_id).first()
     if not note:
         raise HTTPException(status_code=404, detail="note not found")
 
-    owner = _get_user(db, note.username)
-    if not _check_password(password, owner.hashed_password):
+    if note.username != actor_name:
+        raise HTTPException(status_code=403, detail="not authorized for this note")
+    if not _check_password(password, actor.hashed_password):
         raise HTTPException(status_code=403, detail="password mismatch")
 
     db.delete(note)

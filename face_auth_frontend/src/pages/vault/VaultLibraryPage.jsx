@@ -58,7 +58,7 @@ export default function VaultLibraryPage() {
         title="Delete Private Note"
         description="Enter password for this note owner before delete."
         actionLabel="Delete"
-        onVerify={(password) => (noteToDelete ? verifyVaultNotePassword(noteToDelete.id, password) : Promise.resolve(true))}
+        onVerify={(password) => (noteToDelete ? verifyVaultNotePassword(user, noteToDelete.id, password) : Promise.resolve(true))}
         onCancel={() => setNoteToDelete(null)}
         onConfirm={async (password) => {
           if (!noteToDelete) return;

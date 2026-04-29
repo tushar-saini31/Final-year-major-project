@@ -2,6 +2,8 @@ import { useState } from "react";
 import LivenessDetector from "./LivenessDetector";
 import { loginFace } from "../api/faceAuth";
 import { useAuth } from "../context/AuthContext";
+import IntrusionBlockScreen from "./IntrusionBlockScreen";
+import AttemptsWarningPopup from "./AttemptsWarningPopup";
 
 export default function FaceLogin({
   username: initialUsername = "",
@@ -12,6 +14,8 @@ export default function FaceLogin({
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState("liveness");
+  const [blockData, setBlockData] = useState(null);
+  const [warnData, setWarnData] = useState(null);
 
   const { login } = useAuth();
 
@@ -25,14 +29,26 @@ export default function FaceLogin({
     setStatus(null);
 
     try {
-      const result = await loginFace(username, blob);
+      const result = await loginFace(username, blob, profile?.device_id, profile?.device_name);
+      if (result?.ids_blocked) {
+        setBlockData({
+          type: result.block_type,
+          timeRemaining: result.time_remaining || 0,
+          alertType: result.alert_type,
+          message: result.message,
+        });
+        return;
+      }
       if (result.success) {
-        login(username, result.access_token, profile);
+        login(username, result.access_token, profile, result.role || "user");
         onSuccess?.({ username, ...result });
       } else {
+        if (result?.show_warning && result?.attempts_remaining != null) {
+          setWarnData({ remaining: result.attempts_remaining });
+        }
         setStatus({
           type: "error",
-          msg: `Access denied. Similarity: ${(result.similarity * 100).toFixed(1)}%`,
+          msg: result.message || `Access denied. Similarity: ${(result.similarity * 100).toFixed(1)}%`,
         });
         setStep("result");
       }
@@ -54,8 +70,26 @@ export default function FaceLogin({
     setStep("liveness");
   };
 
+  if (blockData) {
+    return (
+      <IntrusionBlockScreen
+        blockType={blockData.type}
+        timeRemaining={blockData.timeRemaining}
+        alertType={blockData.alertType}
+        message={blockData.message}
+        onRetry={() => setBlockData(null)}
+      />
+    );
+  }
+
   return (
     <div style={{ padding: "24px", maxWidth: "700px", margin: "0 auto" }}>
+      {warnData && (
+        <AttemptsWarningPopup
+          remaining={warnData.remaining}
+          onDismiss={() => setWarnData(null)}
+        />
+      )}
       <input
         type="text"
         placeholder="Enter username"

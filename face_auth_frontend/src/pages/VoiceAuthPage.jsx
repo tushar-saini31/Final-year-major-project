@@ -14,7 +14,7 @@ export default function VoiceAuthPage() {
 
   const handleVoiceSuccess = () => {
     if (mode === "register") {
-      loginAndComplete(username, "voice-enrolled-session", profile);
+      loginAndComplete(username, "voice-enrolled-session", profile, "user");
       navigate("/dashboard", { replace: true });
       return;
     }
@@ -84,6 +84,8 @@ export default function VoiceAuthPage() {
               <VoiceAuth
                 username={username}
                 mode={mode === "register" ? "register" : "verify"}
+                deviceId={profile?.device_id}
+                deviceName={profile?.device_name}
                 onSuccess={handleVoiceSuccess}
                 onFail={handleVoiceFail}
               />

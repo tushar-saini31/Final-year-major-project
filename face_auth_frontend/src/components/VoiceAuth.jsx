@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import axios from "axios";
+import IntrusionBlockScreen from "./IntrusionBlockScreen";
+import AttemptsWarningPopup from "./AttemptsWarningPopup";
 
 const BASE = "http://127.0.0.1:8000";
 
-export default function VoiceAuth({ username, onSuccess, onFail, mode = "verify" }) {
+export default function VoiceAuth({ username, onSuccess, onFail, mode = "verify", deviceId = null, deviceName = null }) {
   const [phrase, setPhrase] = useState("");
   const [status, setStatus] = useState("idle");
   const [instruction, setInstruction] = useState("");
@@ -14,6 +16,8 @@ export default function VoiceAuth({ username, onSuccess, onFail, mode = "verify"
   const [audioBlobs, setAudioBlobs] = useState([]);
   const [similarity, setSimilarity] = useState(null);
   const [timeLeft, setTimeLeft] = useState(0);
+  const [blockData, setBlockData] = useState(null);
+  const [warnData, setWarnData] = useState(null);
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -191,6 +195,8 @@ export default function VoiceAuth({ username, onSuccess, onFail, mode = "verify"
       form.append("expected_phrase", phrase);
       // Fall back to expected phrase if Web Speech API returned nothing
       form.append("spoken_phrase", transcript?.trim() || phrase);
+      if (deviceId) form.append("device_id", deviceId);
+      if (deviceName) form.append("device_name", deviceName);
 
       // Send all 3 recordings — backend picks the best-matching one
       blobs.forEach((blob, i) => {
@@ -199,12 +205,28 @@ export default function VoiceAuth({ username, onSuccess, onFail, mode = "verify"
 
       const res = await axios.post(`${BASE}/voice/verify`, form);
 
+      if (res.data?.ids_blocked) {
+        setBlockData({
+          type: res.data.block_type,
+          timeRemaining: res.data.time_remaining || 0,
+          alertType: res.data.alert_type,
+          message: res.data.message,
+        });
+        setStatus("failed");
+        setInstruction(res.data.message || "Access temporarily blocked.");
+        onFail?.(res.data);
+        return;
+      }
+
       if (res.data.success) {
         setSimilarity(res.data.similarity);
         setStatus("success");
         setInstruction("Voice verified successfully!");
         onSuccess?.(res.data);
       } else {
+        if (res.data?.show_warning && res.data?.attempts_remaining != null) {
+          setWarnData({ remaining: res.data.attempts_remaining });
+        }
         setStatus("failed");
         setInstruction(res.data.message || "Voice verification failed");
         setSimilarity(res.data.similarity ?? null);
@@ -253,8 +275,26 @@ export default function VoiceAuth({ username, onSuccess, onFail, mode = "verify"
     if (recording) stopRecording();
   };
 
+  if (blockData) {
+    return (
+      <IntrusionBlockScreen
+        blockType={blockData.type}
+        timeRemaining={blockData.timeRemaining}
+        alertType={blockData.alertType}
+        message={blockData.message}
+        onRetry={() => setBlockData(null)}
+      />
+    );
+  }
+
   return (
     <div className="w-full flex flex-col gap-4">
+      {warnData && (
+        <AttemptsWarningPopup
+          remaining={warnData.remaining}
+          onDismiss={() => setWarnData(null)}
+        />
+      )}
       {/* Phrase display */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 text-center">
         <p className="text-slate-500 text-xs mb-2 tracking-widest uppercase">

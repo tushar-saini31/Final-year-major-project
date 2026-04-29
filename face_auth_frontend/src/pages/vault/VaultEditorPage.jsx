@@ -109,7 +109,7 @@ export default function VaultEditorPage() {
         title="Update Private Note"
         description="Enter password to verify ownership before update."
         actionLabel="Update"
-        onVerify={(password) => (noteId ? verifyVaultNotePassword(noteId, password) : Promise.resolve(true))}
+        onVerify={(password) => (noteId ? verifyVaultNotePassword(user, noteId, password) : Promise.resolve(true))}
         onCancel={() => setPendingUpdate(null)}
         onConfirm={async (password) => {
           if (!pendingUpdate || !noteId) return;

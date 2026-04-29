@@ -7,8 +7,11 @@ export async function verifyVaultUserPassword(username, password) {
   return res.data?.success === true;
 }
 
-export async function verifyVaultNotePassword(noteId, password) {
-  const res = await axios.post(`${BASE}/vault/notes/${noteId}/verify-password`, { password });
+export async function verifyVaultNotePassword(actorUsername, noteId, password) {
+  const res = await axios.post(`${BASE}/vault/notes/${noteId}/verify-password`, {
+    actor_username: actorUsername,
+    password,
+  });
   return res.data?.success === true;
 }
 

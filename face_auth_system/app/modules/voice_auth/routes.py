@@ -1,9 +1,11 @@
 import uuid
 import os
 import random
-from fastapi import APIRouter, UploadFile, File, Form, Depends
+from fastapi import APIRouter, UploadFile, File, Form, Depends, Request
 from .service import register_voice, verify_voice
 from app.database.db import get_db
+from app.modules.intrusion.service import ids_check, record_attempt
+from app.database.models import User
 
 router = APIRouter(prefix="/voice", tags=["Voice Auth"])
 
@@ -71,9 +73,12 @@ async def register(
 
 @router.post("/verify")
 async def verify(
+    request: Request,
     username: str = Form(...),
     expected_phrase: str = Form(...),
     spoken_phrase: str = Form(...),
+    device_id: str = Form("unknown"),
+    device_name: str = Form("Unknown Device"),
     file1: UploadFile = File(...),
     file2: UploadFile = File(None),
     file3: UploadFile = File(None),
@@ -83,6 +88,29 @@ async def verify(
     Accept 1–3 audio samples for verification and use the best-matching one.
     """
     paths = []
+    ip = request.headers.get("x-client-ip") or (request.client.host if request.client else "127.0.0.1")
+    ua = request.headers.get("user-agent", "")
+    ids_result = ids_check(db, username, device_id, ua, ip)
+    if not ids_result.get("allowed"):
+        record_attempt(
+            db, username, device_id, device_name, ua, ip,
+            success=False,
+            risk_score=ids_result["risk_score"],
+            risk_level=ids_result["risk_level"],
+            step_failed="ids_gate",
+            alert_type=ids_result["alert_type"],
+        )
+        return {
+            "success": False,
+            "ids_blocked": True,
+            "block_type": ids_result["block_type"],
+            "block_until": ids_result["block_until"].isoformat() + "Z" if ids_result["block_until"] else None,
+            "time_remaining": ids_result["time_remaining"],
+            "attempts_remaining": ids_result["attempts_remaining"],
+            "alert_type": ids_result["alert_type"],
+            "message": ids_result["message"],
+        }
+
     try:
         for f in [file1, file2, file3]:
             if f is None:
@@ -101,9 +129,21 @@ async def verify(
             paths.append(path)
 
         if not paths:
+            record_attempt(db, username, device_id, device_name, ua, ip, False, ids_result["risk_score"], ids_result["risk_level"], step_failed="voice", alert_type=ids_result.get("alert_type"))
             return {"success": False, "reason": "no_audio", "message": "No audio received."}
 
-        return verify_voice(username, paths, expected_phrase, spoken_phrase, db=db)
+        result = verify_voice(username, paths, expected_phrase, spoken_phrase, db=db)
+        if result.get("success"):
+            record_attempt(db, username, device_id, device_name, ua, ip, True, ids_result["risk_score"], ids_result["risk_level"], step_failed=None, alert_type=ids_result.get("alert_type"))
+            return result
+
+        record_attempt(db, username, device_id, device_name, ua, ip, False, ids_result["risk_score"], ids_result["risk_level"], step_failed="voice", alert_type=ids_result.get("alert_type"))
+        user = db.query(User).filter(User.username == username).first()
+        remaining = max(0, 5 - ((user.failed_attempts or 0) if user else 0))
+        result["attempts_remaining"] = remaining
+        result["show_warning"] = remaining <= 2
+        result["ids_blocked"] = False
+        return result
     finally:
         for p in paths:
             if os.path.exists(p):
